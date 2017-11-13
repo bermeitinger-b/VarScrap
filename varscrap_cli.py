@@ -18,7 +18,7 @@ if __name__ == '__main__':
     )
 
     cli.add_argument(
-        "-csv", "--csv-file",
+        "-in", "--input-file",
         help="Set the input csv file as exported by Zotero",
         required=True
     )
@@ -48,13 +48,13 @@ if __name__ == '__main__':
 
     log.info(f"Running scraping with the options: "
              f"scrape={args.scrape} "
-             f"csv-file={args.csv_file} "
+             f"input-file={args.input_file} "
              f"output={args.output} "
              f"overwrite={args.overwrite} ")
 
     varscrap.run(
         scrape=args.scrape,
-        input_csv_file=args.csv_file,
+        input_file=args.input_file,
         output_folder=args.output,
         overwrite=args.overwrite
     )

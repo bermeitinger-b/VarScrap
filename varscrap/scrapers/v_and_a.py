@@ -48,13 +48,13 @@ class ShallowVandAInformation(object):
         return f"ShallowVandAInformation: {self.item_id}, {self.tag}"
 
     def to_dict(self) -> Dict:
-        return dict({
+        return {
             'item_id': self.item_id,
             'url': self.url,
             'title': self.title,
             'abstract_note': self.abstract_note,
             'tag': self.tag
-        })
+        }
 
 
 class DeepVandAInformation(ShallowVandAInformation):
@@ -124,7 +124,7 @@ class VandA(Scraper):
         self._prepare_output(output=kwargs['output'], overwrite=kwargs['overwrite'])
         self._log.info("Output folder prepared: %s", kwargs['output'])
 
-        df = self._load_csv(kwargs['csv_file'])
+        df = self._load_csv(kwargs['input_file'])
 
         data: List[ShallowVandAInformation] = []
 
@@ -154,12 +154,12 @@ class VandA(Scraper):
                 json.dump(d.to_dict(), fo, indent=2)
 
         self._log.info("Downloading images")
-        # for d in deep_data:
-        #    for idx, image_url in enumerate(d.image_urls):
-        #        self._download_image(
-        #            image_url=image_url,
-        #            target_file=os.path.join(kwargs['output'], f"{d.item_id}_{idx}{self.__IMAGE_SUFFIX}")
-        #        )
+        for d in deep_data:
+            for idx, image_url in enumerate(d.image_urls):
+                self._download_image(
+                    image_url=image_url,
+                    target_file=os.path.join(kwargs['output'], f"{d.item_id}_{idx}{self.__IMAGE_SUFFIX}")
+                )
 
     def _check_input(self, kwargs) -> bool:
         return super(VandA, self)._check_input(kwargs) and all(x in kwargs for x in self.__special_input)

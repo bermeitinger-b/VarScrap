@@ -9,6 +9,7 @@ logging.getLogger("urllib3").setLevel(logging.WARNING)
 
 
 class Scraper(ABC):
+    _LOG = logging.getLogger("Scraper")
 
     @property
     @abstractmethod
@@ -32,7 +33,7 @@ class Scraper(ABC):
 
     @staticmethod
     def _check_input(kwargs) -> bool:
-        return all(x in kwargs for x in ['csv_file', 'output', 'overwrite'])
+        return all(x in kwargs for x in ['input_file', 'output', 'overwrite'])
 
     @staticmethod
     def _prepare_output(output: str, overwrite: bool = False):
@@ -43,12 +44,13 @@ class Scraper(ABC):
         if not os.path.isdir(output):
             os.makedirs(output, exist_ok=True)
 
-    def _download_image(self, image_url: str, target_file: str) -> None:
-        r = requests.get(image_url, stream=True)
+    @staticmethod
+    def _download_image(image_url: str, target_file: str, **kwargs) -> None:
+        r = requests.get(image_url, stream=True, **kwargs)
         if r.ok:
             with open(target_file, 'wb') as f:
                 for chunk in r.iter_content(chunk_size=1024):
                     if chunk:
                         f.write(chunk)
         else:
-            self._log.error("Could not download image '{}': Code {}".format(image_url, r.status_code))
+            Scraper._LOG.error("Could not download image '{}': Code {}".format(image_url, r.status_code))
