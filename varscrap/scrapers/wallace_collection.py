@@ -139,19 +139,19 @@ class WallaceCollection(Scraper):
 
         object_ids = self._extract_object_ids(kwargs['input_file'])
 
-        download_progress_file = os.path.join(kwargs['output'], "downloaded.csv")
+        download_progress_file = os.path.join(kwargs['output'], "downloaded.txt")
 
         if os.path.isfile(download_progress_file):
             with open(download_progress_file, 'r') as fi:
-                download_progress = set(fi.readlines())
+                download_progress = list(set([l.strip() for l in fi]))
         else:
-            download_progress = set()
+            download_progress = []
 
         for object_id in [o for o in object_ids if o not in download_progress]:
             self.__extract_page(object_id, kwargs['output'])
-            download_progress.add(object_id)
+            download_progress.append(object_id)
             with open(download_progress_file, 'w') as fo:
-                fo.writelines(download_progress)
+                fo.write("\n".join(download_progress))
 
     def __extract_page(self, object_id, output) -> None:
         self._log.debug("Will scrape object_id '%s'", object_id)
