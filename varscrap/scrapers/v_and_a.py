@@ -156,6 +156,7 @@ class VandA(Scraper):
         self._log.info("Downloading images")
         for d in deep_data:
             for idx, image_url in enumerate(d.image_urls):
+                self._log.info(f"Will download image {idx + 1}/{len(d.image_urls)} for '{d.item_id}'")
                 self._download_image(
                     image_url=image_url,
                     target_file=os.path.join(kwargs['output'], f"{d.item_id}_{idx}{self.__IMAGE_SUFFIX}")

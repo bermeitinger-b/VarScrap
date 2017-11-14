@@ -5,11 +5,9 @@ import re
 from typing import Optional
 
 import requests
-from scrapy import Selector
+from lxml import html
 
 from . import Scraper
-
-logging.getLogger("scrapy.core.engine").setLevel(logging.WARNING)
 
 
 class WallaceCollectionInformation(object):
@@ -141,36 +139,51 @@ class WallaceCollection(Scraper):
 
         object_ids = self._extract_object_ids(kwargs['input_file'])
 
-        for object_id in object_ids:
+        download_progress_file = os.path.join(kwargs['output'], "downloaded.csv")
+
+        if os.path.isfile(download_progress_file):
+            with open(download_progress_file, 'r') as fi:
+                download_progress = set(fi.readlines())
+        else:
+            download_progress = set()
+
+        for object_id in [o for o in object_ids if o not in download_progress]:
             self.__extract_page(object_id, kwargs['output'])
+            download_progress.add(object_id)
+            with open(download_progress_file, 'w') as fo:
+                fo.writelines(download_progress)
 
     def __extract_page(self, object_id, output) -> None:
+        self._log.debug("Will scrape object_id '%s'", object_id)
         page = requests.get(
             f"{self.__URL_PREFIX}{self.__URL_TEMPLATE}{object_id}",
             cookies={}
         )
 
         if page.ok:
-            html_page = Selector(text=page.text)
+            html_page = html.fromstring(page.text)
 
-            values = {key: html_page.xpath(value).extract_first() for key, value in self.__XPATH.items()}
+            values = {}
+            for xpath_key, xpath_string in self.__XPATH.items():
+                xpath = html_page.xpath(xpath_string)
+                values[xpath_key] = xpath[0] if len(xpath) > 0 else ""
 
             info = WallaceCollectionInformation(object_id=object_id, **values)
 
             image_popup = requests.get(self.__URL_PREFIX + re.findall(r"(/eMuseumPlus.*=F)", values['image_url'])[0],
                                        cookies=page.cookies)
             if image_popup.ok:
-                info.image_url = self.__URL_PREFIX + Selector(text=image_popup.text) \
-                    .xpath("/html/body/div/table/tr/td/img/@src") \
-                    .extract_first()
+                info.image_url = self.__URL_PREFIX + html.fromstring(image_popup.text) \
+                    .xpath("/html/body/div/table/tr/td/img/@src")[0]
 
                 with open(os.path.join(output, f"{info.object_id}.json"), 'w') as fo:
                     json.dump(info.to_dict(), fo, indent=2)
-                WallaceCollection._download_image(image_url=info.image_url,
-                                                  target_file=os.path.join(
-                                                      output,
-                                                      f"{info.object_id}{self.__IMAGE_SUFFIX}"),
-                                                  cookies=image_popup.cookies)
+
+                target_image = os.path.join(output, f"{info.object_id}{self.__IMAGE_SUFFIX}")
+                if not os.path.isfile(target_image):
+                    WallaceCollection._download_image(image_url=info.image_url,
+                                                      target_file=target_image,
+                                                      cookies=image_popup.cookies)
 
     @staticmethod
     def _extract_object_ids(input_file):

@@ -52,5 +52,6 @@ class Scraper(ABC):
                 for chunk in r.iter_content(chunk_size=1024):
                     if chunk:
                         f.write(chunk)
+            Scraper._LOG.debug("Downloaded image: %s", image_url)
         else:
             Scraper._LOG.error("Could not download image '{}': Code {}".format(image_url, r.status_code))
