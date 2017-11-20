@@ -32,7 +32,8 @@ if __name__ == '__main__':
     cli.add_argument(
         "--overwrite",
         help="Set to true to overwrite the current folder",
-        default=False
+        default=False,
+        action="store_true"
     )
 
     args = cli.parse_args()

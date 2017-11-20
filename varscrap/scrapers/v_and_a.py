@@ -1,41 +1,23 @@
 import json
 import logging
 import os
-from typing import List, Optional, Dict
-from urllib.parse import urlparse
+from typing import List, Dict
 
+import pandas as pd
 import requests
 
 from . import Scraper
+from ..converters import zotero
 
 
 class ShallowVandAInformation(object):
-    def __init__(self, item_id: str, url: str, title: str, abstract_note: str, tag: str):
-        if any(x is None for x in [item_id, url, title, abstract_note, tag]):
-            raise ValueError("You must set all initial parameters.")
-
-        # Must have values from Zotero export
+    def __init__(self, item_id: str, tag: str):
         self.__item_id = item_id
-        self.__url = url
-        self.__title = title
-        self.__abstract_note = abstract_note
         self.__tag = tag
 
     @property
     def item_id(self):
         return self.__item_id
-
-    @property
-    def url(self):
-        return self.__url
-
-    @property
-    def title(self):
-        return self.__title
-
-    @property
-    def abstract_note(self):
-        return self.__abstract_note
 
     @property
     def tag(self):
@@ -50,22 +32,19 @@ class ShallowVandAInformation(object):
     def to_dict(self) -> Dict:
         return {
             'item_id': self.item_id,
-            'url': self.url,
-            'title': self.title,
-            'abstract_note': self.abstract_note,
             'tag': self.tag
         }
 
 
 class DeepVandAInformation(ShallowVandAInformation):
-
     def __init__(self,
                  shallow: ShallowVandAInformation,
                  image_urls: List[str],
                  verbose: Dict):
-        super().__init__(shallow.item_id, shallow.url, shallow.title, shallow.abstract_note, shallow.tag)
+        super().__init__(shallow.item_id, shallow.tag)
         self.__image_urls = image_urls
         self.__verbose = verbose
+        self.__image_names = []
 
     @property
     def image_urls(self):
@@ -75,10 +54,15 @@ class DeepVandAInformation(ShallowVandAInformation):
     def verbose(self):
         return self.__verbose
 
+    @property
+    def image_names(self):
+        return self.__image_names
+
     def to_dict(self):
         d = super(DeepVandAInformation, self).to_dict()
         d.update({
             'image_urls': self.image_urls,
+            'image_names': self.image_names,
             'verbose': self.verbose
         })
         return d
@@ -92,6 +76,12 @@ class VandA(Scraper):
     It's using the available API from: http://www.vam.ac.uk/api/
     """
     __special_input = []
+
+    __IGNORED_TAGS = [
+        ";"
+    ]
+
+    __OBJECT_ID_PATTERN = r'item/(?P<objectId>O[0-9]+)'
 
     def __init__(self):
         self.__logger = logging.getLogger(self.__class__.__name__)
@@ -118,7 +108,7 @@ class VandA(Scraper):
     def scrape(self, **kwargs):
         self._log.debug("Called scrape with options: %s", kwargs)
 
-        if not self._check_input(kwargs):
+        if not self._check_input(**kwargs):
             raise ValueError("One or more arguments are missing.")
 
         self._prepare_output(output=kwargs['output'], overwrite=kwargs['overwrite'])
@@ -129,13 +119,16 @@ class VandA(Scraper):
         data: List[ShallowVandAInformation] = []
 
         for _, row in df.iterrows():
+            import_data: zotero.ZoteroData = zotero.parse_row(row, self.__OBJECT_ID_PATTERN)
+            if any(x in import_data.tag for x in self.__IGNORED_TAGS):
+                continue
+            if import_data.object_id in [j.item_id for j in data]:
+                self._log.debug("Duplicated object id: '%s'", import_data.object_id)
+                continue
             data.append(
                 ShallowVandAInformation(
-                    item_id=self.__extract_item_id(row['Url']),
-                    url=row['Url'],
-                    title=row['Title'],
-                    abstract_note=row['Abstract Note'],
-                    tag=self.__extract_tag(row['Manual Tags'], row['Title'])
+                    item_id=import_data.object_id,
+                    tag=import_data.tag
                 )
             )
 
@@ -156,29 +149,42 @@ class VandA(Scraper):
         self._log.info("Downloading images")
         for d in deep_data:
             for idx, image_url in enumerate(d.image_urls):
+                target_file = os.path.join(kwargs['output'], f"{d.item_id}_{idx}{self.__IMAGE_SUFFIX}")
+
                 self._log.info(f"Will download image {idx + 1}/{len(d.image_urls)} for '{d.item_id}'")
-                self._download_image(
-                    image_url=image_url,
-                    target_file=os.path.join(kwargs['output'], f"{d.item_id}_{idx}{self.__IMAGE_SUFFIX}")
-                )
+                if os.path.isfile(target_file):
+                    self._log.debug("Already exists, skipping")
+                else:
+                    if self._download_image(
+                            image_url=image_url,
+                            target_file=target_file
+                    ):
+                        d.image_names.append(target_file)
+                    else:
+                        self._log.warning("Could not download this file.")
 
-    def _check_input(self, kwargs) -> bool:
+        _item_ids = []
+        _tags = []
+        _image_paths = []
+
+        for d in deep_data:
+            for ip in d.image_names:
+                _item_ids.append(d.item_id)
+                _tags.append(d.tag)
+                _image_paths.append(ip)
+
+        df = pd.DataFrame(
+            {
+                'item_id': _item_ids,
+                'tag': _tags,
+                'image_path': _image_paths
+            }
+        )
+
+        df.to_csv(os.path.join(kwargs['output'], 'vanda_scraped.csv'))
+
+    def _check_input(self, **kwargs) -> bool:
         return super(VandA, self)._check_input(kwargs) and all(x in kwargs for x in self.__special_input)
-
-    @staticmethod
-    def __extract_item_id(url_str) -> str:
-        url = urlparse(url_str)
-        path = url.path.split("/")
-        assert path[0] == ''
-        assert path[1] == 'item'
-        return path[2]
-
-    @staticmethod
-    def __extract_tag(manual_tag: str, title: Optional[str]) -> str:
-        if len(manual_tag) > 0:
-            return manual_tag
-        else:
-            return title.split("|")[0]
 
     def __call_api(self, source: ShallowVandAInformation) -> DeepVandAInformation:
         req = requests.get(f"{self.__API_URL}/{source.item_id}")

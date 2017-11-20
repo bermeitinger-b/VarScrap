@@ -45,7 +45,7 @@ class Scraper(ABC):
             os.makedirs(output, exist_ok=True)
 
     @staticmethod
-    def _download_image(image_url: str, target_file: str, **kwargs) -> None:
+    def _download_image(image_url: str, target_file: str, **kwargs) -> bool:
         r = requests.get(image_url, stream=True, **kwargs)
         if r.ok:
             with open(target_file, 'wb') as f:
@@ -53,5 +53,8 @@ class Scraper(ABC):
                     if chunk:
                         f.write(chunk)
             Scraper._LOG.debug("Downloaded image: %s", image_url)
+            return True
         else:
             Scraper._LOG.error("Could not download image '{}': Code {}".format(image_url, r.status_code))
+
+        return False

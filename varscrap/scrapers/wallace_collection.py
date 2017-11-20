@@ -2,12 +2,14 @@ import json
 import logging
 import os
 import re
-from typing import Optional
+from typing import Optional, List
 
+import pandas as pd
 import requests
 from lxml import html
 
 from . import Scraper
+from ..converters.zotero import ZoteroData, parse_row
 
 
 class WallaceCollectionInformation(object):
@@ -27,6 +29,7 @@ class WallaceCollectionInformation(object):
         self.__museum_number = museum_number
         self.__commentary = commentary
         self.__image_url = image_url
+        self.__tag = None
 
     @property
     def object_id(self):
@@ -84,6 +87,18 @@ class WallaceCollectionInformation(object):
     def image_url(self, image_url):
         self.__image_url = image_url
 
+    @property
+    def image_name(self):
+        return f"{self.object_id}.jpg"
+
+    @property
+    def tag(self):
+        return self.__tag
+
+    @tag.setter
+    def tag(self, tag):
+        self.__tag = tag
+
     def to_dict(self):
         return {
             'object_id': self.object_id,
@@ -98,7 +113,9 @@ class WallaceCollectionInformation(object):
             'marks': self.marks,
             'museum_number': self.museum_number,
             'commentary': self.commentary,
-            'image_url': self.image_url
+            'image_url': self.image_url,
+            'image_name': self.image_name,
+            'tag': self.tag
         }
 
 
@@ -110,7 +127,8 @@ class WallaceCollection(Scraper):
 
     __URL_PREFIX = "http://wallacelive.wallacecollection.org"
     __URL_TEMPLATE = "/eMuseumPlus?service=ExternalInterface&module=collection&viewType=detailView&objectId="
-    __IMAGE_SUFFIX = ".jpg"
+
+    __URL_OBJECT_ID = r"objectId=(?P<objectId>[0-9]+)"
 
     __XPATH = {
         'object_name': '/html/body/div[1]/div[4]/div[2]/div[2]/dl[1]/dd[1]/ul[1]/li[1]/span[1]/text()',
@@ -128,7 +146,7 @@ class WallaceCollection(Scraper):
     }
 
     def __init__(self):
-        self.__logger = logging.getLogger(self.__class__.__name__)
+        self.__logger = logging.getLogger(__name__)
 
     @property
     def _log(self):
@@ -137,7 +155,10 @@ class WallaceCollection(Scraper):
     def scrape(self, **kwargs):
         self._log.debug("Called scrape with options: %s", kwargs)
 
-        object_ids = self._extract_object_ids(kwargs['input_file'])
+        objects: List[ZoteroData] = [
+            parse_row(row, self.__URL_OBJECT_ID)
+            for _, row in pd.read_csv(kwargs['input_file']).iterrows()
+        ]
 
         download_progress_file = os.path.join(kwargs['output'], "downloaded.txt")
 
@@ -147,16 +168,29 @@ class WallaceCollection(Scraper):
         else:
             download_progress = []
 
-        for object_id in [o for o in object_ids if o not in download_progress]:
-            self.__extract_page(object_id, kwargs['output'])
-            download_progress.append(object_id)
+        annotations = []
+
+        for obj in [o for o in objects if o.object_id not in download_progress]:
+            annotation: Optional[WallaceCollectionInformation] = self.__extract_page(obj, kwargs['output'])
+            if annotation is None:
+                self._log.error(f"Object '{obj.object_id}' could not be downloaded")
+                continue
+            annotations.append(annotation)
+            download_progress.append(obj.object_id)
             with open(download_progress_file, 'w') as fo:
                 fo.write("\n".join(download_progress))
 
-    def __extract_page(self, object_id, output) -> None:
-        self._log.debug("Will scrape object_id '%s'", object_id)
+        df = pd.DataFrame(
+            [a.to_dict() for a in annotations],
+            index=[o.object_id for o in objects],
+            columns=['object_id', 'tag', 'image_name'])
+
+        df.to_csv(os.path.join(kwargs['output'], "wallace_annotation.csv"))
+
+    def __extract_page(self, obj: ZoteroData, output) -> Optional[WallaceCollectionInformation]:
+        self._log.debug("Will scrape object_id '%s'", obj.object_id)
         page = requests.get(
-            f"{self.__URL_PREFIX}{self.__URL_TEMPLATE}{object_id}",
+            f"{self.__URL_PREFIX}{self.__URL_TEMPLATE}{obj.object_id}",
             cookies={}
         )
 
@@ -168,7 +202,8 @@ class WallaceCollection(Scraper):
                 xpath = html_page.xpath(xpath_string)
                 values[xpath_key] = xpath[0] if len(xpath) > 0 else ""
 
-            info = WallaceCollectionInformation(object_id=object_id, **values)
+            info = WallaceCollectionInformation(object_id=obj.object_id, **values)
+            info.tag = obj.tag
 
             image_popup = requests.get(self.__URL_PREFIX + re.findall(r"(/eMuseumPlus.*=F)", values['image_url'])[0],
                                        cookies=page.cookies)
@@ -179,11 +214,13 @@ class WallaceCollection(Scraper):
                 with open(os.path.join(output, f"{info.object_id}.json"), 'w') as fo:
                     json.dump(info.to_dict(), fo, indent=2)
 
-                target_image = os.path.join(output, f"{info.object_id}{self.__IMAGE_SUFFIX}")
+                target_image = os.path.join(output, f"{info.object_id}.jpg")
                 if not os.path.isfile(target_image):
                     WallaceCollection._download_image(image_url=info.image_url,
                                                       target_file=target_image,
                                                       cookies=image_popup.cookies)
+
+                return info
 
     @staticmethod
     def _extract_object_ids(input_file):

@@ -1,6 +1,8 @@
 import logging
 
-_log = logging.getLogger("varscrap")
+import os
+
+_log = logging.getLogger(__name__)
 
 
 def run(scrape, input_file, output_folder, overwrite=False):
@@ -13,6 +15,9 @@ def run(scrape, input_file, output_folder, overwrite=False):
     else:
         _log.error("Using an interface that is not supported.")
         raise ValueError(f"This scraper is unsupported: '{scrape}'")
+
+    if not os.path.isdir(output_folder):
+        os.makedirs(output_folder, exist_ok=True)
 
     scraper = Scraper()
     scraper.scrape(input_file=input_file, output=output_folder, overwrite=overwrite)
