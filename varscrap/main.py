@@ -12,6 +12,9 @@ def run(scrape, input_file, output_folder, overwrite=False):
     elif scrape.lower() == 'wallace':
         from .scrapers.wallace_collection import WallaceCollection as Scraper
         _log.info("Using WallaceCollection interface")
+    elif scrape.lower() == 'hermitagemuseum':
+         from .scrapers.state_hermitage_museum import HermitageMuseum as Scraper
+         _log.info("Usin HermitageMuseum interface")
     else:
         _log.error("Using an interface that is not supported.")
         raise ValueError(f"This scraper is unsupported: '{scrape}'")
