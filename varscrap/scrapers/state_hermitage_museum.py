@@ -187,6 +187,7 @@ class HermitageMuseum(Scraper):
         objects: List[str] = self._extract_all_from_search(kwargs['input_file'])
 
         download_progress_file = os.path.join(kwargs['output'], "downloaded.txt")
+        download_failed_file = os.path.join(kwargs['output'], "failed.txt")
 
         if os.path.isfile(download_progress_file):
             with open(download_progress_file, 'r') as fi:
@@ -195,17 +196,34 @@ class HermitageMuseum(Scraper):
             download_progress = []
 
         annotations = []
+        to_retry = []
 
         for (obj, obj_id) in [(o, o.split("/digital-collection/")[1].replace("/","_")) for o in objects if
                               o.split("/digital-collection/")[1].replace("/","_") not in download_progress]:
             annotation: Optional[HermitageMuseumInformation] = self.__extract_page(obj, obj_id, kwargs['output'])
             if annotation is None:
-                self._log.error(f"Object '{obj_id}' could not be downloaded")
+                self._log.error(f"Object '{obj_id}' could not be downloaded on the first try")
+                to_retry.append((obj, obj_id))
                 continue
             annotations.append(annotation)
             download_progress.append(obj_id)
             with open(download_progress_file, 'w') as fo:
                 fo.write("\n".join(download_progress))
+
+        download_failed = []
+        for (obj, obj_id) in [(o[0],o[1]) for o in to_retry]:
+            annotation: Optional[HermitageMuseumInformation] = self.__extract_page(obj, obj_id, kwargs['output'])
+            if annotation is None:
+                self._log.error(f"Object '{obj_id}' could not be downloaded")
+                download_failed.append(obj)
+                continue
+            annotations.append(annotation)
+            download_progress.append(obj_id)
+            with open(download_progress_file, 'w') as fo:
+                fo.write("\n".join(download_progress))
+
+        with open(download_failed_file, 'w') as fo:
+            fo.write("\n".join(download_failed))
 
         df = pd.DataFrame(
             [a.to_dict() for a in annotations],
@@ -232,23 +250,25 @@ class HermitageMuseum(Scraper):
             html_page = html.fromstring(page.text)
             values = {}
             i = 1
-            table = html_page.xpath(self.__XPATH_table)[0]
-            while True:
-                key_list = table.xpath(self.__XPATH_table_format.format(i, 1, "p"))
-                if len(key_list) == 0:
-                    break
-                key = key_list[0].replace("\n", "").rstrip(" ")
-                if key not in self.__keys.keys():
+            try:
+                table = html_page.xpath(self.__XPATH_table)[0]
+                while True:
+                    key_list = table.xpath(self.__XPATH_table_format.format(i, 1, "p"))
+                    if len(key_list) == 0:
+                        break
+                    key = key_list[0].replace("\n", "").rstrip(" ")
+                    if key not in self.__keys.keys():
+                        i = i + 1
+                        continue
+                    key = self.__keys[key]
+                    value_list = table.xpath(self.__XPATH_table_format.format(i, 2, "a"))
+                    if len(value_list) == 0:
+                        value_list = table.xpath(self.__XPATH_table_format.format(i, 2, "p"))
+                    values[key] = value_list[0].strip("\n").rstrip(" ")
                     i = i + 1
-                    continue
-                key = self.__keys[key]
-                value_list = table.xpath(self.__XPATH_table_format.format(i, 2, "a"))
-                if len(value_list) == 0:
-                    value_list = table.xpath(self.__XPATH_table_format.format(i, 2, "p"))
-                values[key] = value_list[0].strip("\n").rstrip(" ")
-                i = i + 1
-            values['image_url'] = self.__URL_PREFIX + html_page.xpath(self.__XPATH_image_url)[0]
-
+                values['image_url'] = self.__URL_PREFIX + html_page.xpath(self.__XPATH_image_url)[0]
+            except IndexError:
+                return None
             info = HermitageMuseumInformation(object_id=obj_id, **values)
             info.tag = ""
 
@@ -257,10 +277,11 @@ class HermitageMuseum(Scraper):
 
             target_image = os.path.join(output, info.image_name)
             if not os.path.isfile(target_image):
-                HermitageMuseum._download_image(image_url=info.image_url,
+                image_ok = HermitageMuseum._download_image(image_url=info.image_url,
                                                 target_file=target_image,
                                                 cookies=page.cookies)
-
+                if not image_ok:
+                    return None
             return info
 
     def _extract_all_from_search(self, search_url):
