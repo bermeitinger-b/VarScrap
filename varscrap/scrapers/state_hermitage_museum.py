@@ -6,6 +6,8 @@ from selenium import webdriver
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.common.by import By
+from selenium.common.exceptions import WebDriverException
+from selenium.common.exceptions import TimeoutException
 
 import pandas as pd
 import requests
@@ -294,40 +296,50 @@ class HermitageMuseum(Scraper):
         :return: list of all url's to the results of the search request
         :rtype: list
         """
-
-        browser = webdriver.Firefox()
-        browser.get(search_url)
-        timeout = 5
-        max_page = 1
-        WebDriverWait(browser, timeout).until(EC.presence_of_element_located((By.CLASS_NAME, "her-pagination")))
-        pagination = browser.find_element_by_class_name("her-pagination")
-        li_elements = pagination.find_elements_by_tag_name("li")
-        for li_element in li_elements:
-            try:
-                value = int(li_element.text)
-                if value > max_page:
-                    max_page = value
-            except ValueError:
-                pass
-        all_links = []
-        for i in range(1, max_page + 1):
-            row_elements = browser.find_elements_by_class_name("her-search-results-row")
-            for element in row_elements:
-                link = element.find_element_by_tag_name("a").get_attribute("href")
-                all_links.append(link)
-                self._log.debug(link)
+        try:
+            browser = webdriver.Firefox()
+            browser.get(search_url)
+            timeout = 5
+            max_page = 1
+            WebDriverWait(browser, timeout).until(EC.presence_of_element_located((By.CLASS_NAME, "her-pagination")))
             pagination = browser.find_element_by_class_name("her-pagination")
             li_elements = pagination.find_elements_by_tag_name("li")
             for li_element in li_elements:
                 try:
                     value = int(li_element.text)
-                    if value == i + 1:
-                        li_element.click()
-                        WebDriverWait(browser, timeout).until(EC.staleness_of(li_element))
-                        WebDriverWait(browser, timeout).until(
-                            EC.presence_of_element_located((By.CLASS_NAME, "her-pagination")))
-                        break
+                    if value > max_page:
+                        max_page = value
                 except ValueError:
                     pass
-        browser.quit()
-        return all_links
+            all_links = []
+            for i in range(1, max_page + 1):
+                row_elements = browser.find_elements_by_class_name("her-search-results-row")
+                for element in row_elements:
+                    link = element.find_element_by_tag_name("a").get_attribute("href")
+                    all_links.append(link)
+                    self._log.debug(link)
+                pagination = browser.find_element_by_class_name("her-pagination")
+                li_elements = pagination.find_elements_by_tag_name("li")
+                for li_element in li_elements:
+                    try:
+                        value = int(li_element.text)
+                        if value == i + 1:
+                            li_element.click()
+                            WebDriverWait(browser, timeout).until(EC.staleness_of(li_element))
+                            WebDriverWait(browser, timeout).until(
+                                EC.presence_of_element_located((By.CLASS_NAME, "her-pagination")))
+                            break
+                    except ValueError:
+                        pass
+            browser.quit()
+            if len(all_links) == 0:
+                self._log.error("No URLs have been extracted.")
+            return all_links
+        except TimeoutException as e:
+            self._log.error("Timeout while extracting all URLs via Selenium: {}".format(e.msg))
+        except WebDriverException as e:
+            self._log.error("Error while extracting all URLs via Selenium: {}".format(e.msg))
+        self._log.error("No URLs have been extracted.")
+        return []
+
+
