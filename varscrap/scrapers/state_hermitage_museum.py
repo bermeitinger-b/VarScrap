@@ -2,6 +2,9 @@ import json
 import logging
 import os
 from typing import Optional, List
+from queue import Queue
+from queue import Empty
+from threading import Thread
 from selenium import webdriver
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
@@ -197,42 +200,74 @@ class HermitageMuseum(Scraper):
         else:
             download_progress = []
 
+        queue = Queue()
+        output_queue = Queue()
+        failed_queue = Queue()
         annotations = []
-        to_retry = []
 
-        for (obj, obj_id) in [(o, o.split("/digital-collection/")[1].replace("/","_")) for o in objects if
-                              o.split("/digital-collection/")[1].replace("/","_") not in download_progress]:
-            annotation: Optional[HermitageMuseumInformation] = self.__extract_page(obj, obj_id, kwargs['output'])
-            if annotation is None:
-                self._log.error(f"Object '{obj_id}' could not be downloaded on the first try")
-                to_retry.append((obj, obj_id))
-                continue
-            annotations.append(annotation)
-            download_progress.append(obj_id)
-            with open(download_progress_file, 'w') as fo:
-                fo.write("\n".join(download_progress))
+        for url in objects:
+            id = url.split("/digital-collection/")[1].replace("/", "_")
+            if id not in download_progress:
+                queue.put((url, id, 0))
 
-        download_failed = []
-        for (obj, obj_id) in [(o[0],o[1]) for o in to_retry]:
-            annotation: Optional[HermitageMuseumInformation] = self.__extract_page(obj, obj_id, kwargs['output'])
-            if annotation is None:
-                self._log.error(f"Object '{obj_id}' could not be downloaded")
-                download_failed.append(obj)
-                continue
-            annotations.append(annotation)
-            download_progress.append(obj_id)
-            with open(download_progress_file, 'w') as fo:
-                fo.write("\n".join(download_progress))
+        number_of_threads = min(queue.qsize(), 10)
+        if len(objects) > 0 and queue.qsize() == 0:
+            self._log.error("All extracted URLs have already been downloaded.")
+        self._log.info("Will scrap {} elements".format(queue.qsize()))
+        threads = []
+        self._log.debug("Starting {} Threads".format(number_of_threads))
+        for i in range(number_of_threads):
+            t = Thread(target=self.__extract_page_worker, args=(kwargs['output'], queue, output_queue, failed_queue,))
+            t.start()
+            threads.append(t)
+            self._log.debug("Started Thread: {}".format(i))
 
-        with open(download_failed_file, 'w') as fo:
-            fo.write("\n".join(download_failed))
-
+        progress_file = open(download_progress_file, 'a')
+        failed_file = open(download_failed_file,'a')
+        progress_write_thread = Thread(target=self._write_progress_worker, args=(output_queue, progress_file, annotations, ))
+        failed_write_thread = Thread(target=self._write_progress_worker, args=(failed_queue, failed_file,))
+        progress_write_thread.start()
+        failed_write_thread.start()
+        queue.join()
+        output_queue.join()
+        failed_queue.join()
+        output_queue.put(None)
+        failed_queue.put(None)
+        progress_file.close()
+        failed_file.close()
         df = pd.DataFrame(
             [a.to_dict() for a in annotations],
-            index=[o.split("/digital-collection/")[1].replace("/", "_") for o in objects],
+            index=[a.object_id for a in annotations],
             columns=['object_id', 'tag', 'image_name'])
 
         df.to_csv(os.path.join(kwargs['output'], "hermitage_museum_annotation.csv"))
+
+    def __extract_page_worker(self, output, queue, output_queue, failed_queue):
+        """
+        Worker to threaded scrap a HermitageMuseumInformation object.
+        All information is stored in queues to allow for inter thread communication.
+
+        :param output: path where the Information is written to
+        :param queue: queue of 3-tuples (url, obj_id, tries) that still need to be scraped
+        :param output_queue: queue of all HermitageMuseumInformation objects
+        :param failed_queue: queue of all finally failed urls
+        :return: None
+        """
+        while not queue.empty():
+            obj = queue.get()
+            url = obj[0]
+            obj_id = obj[1]
+            tries = obj[2]
+            annotation: Optional[HermitageMuseumInformation] = self.__extract_page(url, obj_id, output)
+            if annotation is None and tries >= 2:
+                self._log.error(f"Object '{obj_id}' could not be downloaded")
+                failed_queue.put(url)
+            elif annotation is None:
+                self._log.error(f"Object '{obj_id}' could not be downloaded")
+                queue.put((url, tries + 1))
+            else:
+                output_queue.put(annotation)
+            queue.task_done()
 
     def __extract_page(self, obj, obj_id, output) -> Optional[HermitageMuseumInformation]:
         """
@@ -246,8 +281,11 @@ class HermitageMuseum(Scraper):
         """
 
         self._log.debug("Will scrape object_id '%s'", obj_id)
-        page = requests.get(obj, cookies={})
-
+        try:
+            page = requests.get(obj, cookies={})
+        except Exception as e:
+            self._log.debug(e)
+            return None
         if page.ok:
             html_page = html.fromstring(page.text)
             values = {}
@@ -342,4 +380,29 @@ class HermitageMuseum(Scraper):
         self._log.error("No URLs have been extracted.")
         return []
 
+    @staticmethod
+    def _write_progress_worker(output_queue, download_progress_file, annotations=None):
+        """
+        Worker to write the progress file.
 
+        :param output_queue: queue with the HermitageMuseumInformation object or the obj_id of already scraped elements
+        :param download_progress_file: file where the progress is appended to
+        :param annotations: list of already scraped HermitageMuseumInformation objects
+        :return: None
+        """
+        while True:
+            try:
+                element = output_queue.get(True, 2)
+                if element is None:
+                    break
+                if isinstance(element, HermitageMuseumInformation):
+                    progress = element.object_id
+                    if annotations is not None:
+                        annotations.append(element)
+                else:
+                    progress = element
+                download_progress_file.write(progress + "\n")
+                download_progress_file.flush()
+                output_queue.task_done()
+            except Empty:
+                continue
